@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import ctypes
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -55,14 +56,14 @@ def find_loaded_library(lib_name) -> Optional[str]:
     # raise "undefined symbol" on load. Scan every mapping and keep only names that
     # are really lib_name, i.e. `lib_name.so[.ver]` or `lib_name-<hash>.so[.ver]`.
     # See https://github.com/flashinfer-ai/flashinfer/issues/3676.
+    runtime_name = re.compile(re.escape(lib_name) + r"(?:-[0-9a-f]+)?\.so(?:\.\d+)*")
     with open("/proc/self/maps") as f:
         for line in f:
             if lib_name not in line or "/" not in line:
                 continue
-            path = line[line.index("/"):].strip()
+            path = line[line.index("/") :].strip()
             filename = path.split("/")[-1]
-            stem = filename.rpartition(".so")[0]
-            if stem == lib_name or stem.startswith(lib_name + ".") or stem.startswith(lib_name + "-"):
+            if runtime_name.fullmatch(filename):
                 return path
     # the library is not loaded in the current process
     return None
