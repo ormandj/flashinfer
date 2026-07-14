@@ -15,6 +15,7 @@ limitations under the License.
 """
 
 import functools
+import logging
 from dataclasses import replace
 import warnings
 from enum import Enum
@@ -82,6 +83,8 @@ from ..jit.gemm import gen_fp8_blockscale_gemm_sm90_module
 from ..tllm_enums import DtypeTrtllmGen, SfLayout
 from .routergemm import get_tinygemm2_module
 
+
+logger = logging.getLogger(__name__)
 
 CUDNN_AVAILABLE = False
 try:
@@ -2327,7 +2330,12 @@ def _cudnn_graph_engine_knob_tactics(graph) -> List[tuple]:
     for plan_idx in range(graph.get_execution_plan_count()):
         try:
             engine_id, knobs = graph.get_engine_and_knobs_at_index(plan_idx)
-        except (AttributeError, RuntimeError):
+        except (AttributeError, RuntimeError) as exc:
+            logger.debug(
+                "Skipping plan index %d in cuDNN engine/knob tactic enumeration: %s",
+                plan_idx,
+                exc,
+            )
             continue
         knob_items = tuple(
             sorted((int(knob_type), int(value)) for knob_type, value in knobs.items())
@@ -2337,7 +2345,11 @@ def _cudnn_graph_engine_knob_tactics(graph) -> List[tuple]:
 
 
 def _is_cudnn_engine_knob_tactic(tactic) -> bool:
-    return isinstance(tactic, (tuple, list)) and len(tactic) == 2
+    return isinstance(tactic, tuple) and len(tactic) == 2
+
+
+def _tactic_for_graph_cache(tactic) -> int:
+    return 0 if _is_cudnn_engine_knob_tactic(tactic) or tactic >= 0 else -1
 
 
 def _cudnn_knob_items_to_dict(knob_items) -> dict:
@@ -2388,6 +2400,12 @@ def _get_cudnn_plan_index_for_tactic(graph, tactic) -> int:
         plan_index = tactic
 
     if plan_index >= graph.get_execution_plan_count():
+        warnings.warn(
+            f"cuDNN GEMM plan index {plan_index} is out of range "
+            f"(execution plan count: {graph.get_execution_plan_count()}); "
+            "falling back to default tactic=-1.",
+            stacklevel=3,
+        )
         plan_index = -1
     return plan_index
 
@@ -2429,7 +2447,7 @@ def clear_cudnn_graph_cache() -> None:
         **Internal / debug-only helper** -- not part of FlashInfer's
         public API.  Production callers should never need this:
         every ``build_cudnn_gemm_*`` helper is wrapped with
-        ``functools.lru_cache(maxsize=1024)``, which auto-evicts cold
+        ``functools.lru_cache(maxsize=2048)``, which auto-evicts cold
         shapes and keeps hot shapes resident, capping GPU memory
         growth on its own.
 
@@ -2529,7 +2547,7 @@ def _validate_bf16_output_dtype(dtype: torch.dtype):
         )
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_fp4_graph(
     a_shape,
     a_stride,
@@ -2684,7 +2702,7 @@ def execute_cudnn_gemm_fp4_graph(
 _OVERRIDE_SHAPE_CACHE_M = 8192
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_fp4_graph_override_shape(
     batch,
     n,
@@ -2955,7 +2973,7 @@ def execute_cudnn_gemm_mxfp8_graph(
         )
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_mxfp8_graph_override_shape(
     batch,
     n,
@@ -3184,7 +3202,7 @@ def execute_cudnn_gemm_mxfp8_graph_override_shape(
         )
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_fp8_graph(
     a_shape,
     a_stride,
@@ -3295,7 +3313,7 @@ def execute_cudnn_gemm_fp8_graph(
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_fp8_graph_override_shape(
     batch,
     n,
@@ -3526,9 +3544,7 @@ def _cudnn_gemm_fp8_runner():
                 o_type=_torch_data_type_to_cudnn_data_type(out.dtype),
                 device=a.device,
                 cache_m=cache_m,
-                tactic=(
-                    0 if _is_cudnn_engine_knob_tactic(tactic) or tactic >= 0 else -1
-                ),
+                tactic=_tactic_for_graph_cache(tactic),
             )
 
         def get_valid_tactics(
@@ -3634,7 +3650,7 @@ def _get_bf16_3d_shape_stride(tensor: torch.Tensor):
     return (tuple(shape), tuple(stride))
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_bf16_graph(
     a_shape,
     a_stride,
@@ -3731,7 +3747,7 @@ def execute_cudnn_gemm_bf16_graph(graph, a, b, bias, c_final, workspace, tactic=
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_bf16_graph_override_shape(
     batch,
     n,
@@ -4030,10 +4046,7 @@ def _cudnn_gemm_bf16_runner(
                 cache_m=cache_m,
                 is_a_k_major=self._is_a_k_major,
                 is_b_k_major=self._is_b_k_major,
-                # tactic value only be 0 or -1 to hit the graph cache
-                tactic=(
-                    0 if _is_cudnn_engine_knob_tactic(tactic) or tactic >= 0 else -1
-                ),
+                tactic=_tactic_for_graph_cache(tactic),
             )
             return graph
 
@@ -5103,10 +5116,7 @@ def _cudnn_mm_mxfp8_runner():
                 block_size=32,
                 device=a.device,
                 cache_m=cache_m,
-                # tactic value only be 0 or -1 to hit the graph cache
-                tactic=(
-                    0 if _is_cudnn_engine_knob_tactic(tactic) or tactic >= 0 else -1
-                ),
+                tactic=_tactic_for_graph_cache(tactic),
             )
 
         def get_valid_tactics(
@@ -5522,10 +5532,7 @@ def _cudnn_gemm_fp4_runner(tuning_config):
                 alpha_is_not_none=alpha is not None,
                 use_nvfp4=use_nvfp4,
                 cache_m=cache_m,
-                # tactic value only be 0 or -1 to hit the graph cache
-                tactic=(
-                    0 if _is_cudnn_engine_knob_tactic(tactic) or tactic >= 0 else -1
-                ),
+                tactic=_tactic_for_graph_cache(tactic),
             )
             return graph
 
@@ -8739,7 +8746,7 @@ def _calculate_block_scale_dims(
     return block_scale_dim_m, block_scale_dim_n, block_scale_dim_k
 
 
-@functools.lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=2048)
 def build_cudnn_gemm_mxfp8_graph(
     a_shape,
     a_stride,
@@ -8939,10 +8946,7 @@ def _cudnn_gemm_mxfp8_runner():
                 block_size=32,
                 device=a.device,
                 cache_m=cache_m,
-                # tactic value only be 0 or -1 to hit the graph cache
-                tactic=(
-                    0 if _is_cudnn_engine_knob_tactic(tactic) or tactic >= 0 else -1
-                ),
+                tactic=_tactic_for_graph_cache(tactic),
             )
 
         def get_valid_tactics(
