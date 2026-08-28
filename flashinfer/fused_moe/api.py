@@ -1218,6 +1218,9 @@ class B12xW4A16Config:
     ):
         """Build the ``b12x_w4a16`` weight view from checkpoint fp4 weights.
 
+        ``source_format="modelopt_e4m3_k32"`` selects E4M3 block scales at
+        K/32 cadence for BF16-activation weight-only serving.
+
         Register the result with ``MoEWeightPack.prepare_for("b12x_w4a16", ...)``.
         See :func:`flashinfer.fused_moe.prepare.prepare_b12x_w4a16_weights`.
         """
