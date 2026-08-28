@@ -2234,8 +2234,8 @@ def prepare_b12x_w4a16_weights(
     activation : str
         Kernel activation name: ``"silu"`` or ``"relu2"``.
     source_format : str
-        Checkpoint scale convention: ``"modelopt"`` or
-        ``"compressed_tensors"``.
+        Checkpoint scale convention: ``"modelopt"``,
+        ``"modelopt_e4m3_k32"``, or ``"compressed_tensors"``.
 
     Returns
     -------
@@ -2249,12 +2249,9 @@ def prepare_b12x_w4a16_weights(
     )
     from .cute_dsl.blackwell_sm12x.moe_w4a16_prepare import (
         _normalize_source_format,
-        _source_global_scale,
     )
 
     source_format = _normalize_source_format(source_format)
-    w1_global_scale = _source_global_scale(w1_global_scale, source_format=source_format)
-    w2_global_scale = _source_global_scale(w2_global_scale, source_format=source_format)
     _get_w4a16_packed_weights(
         w1_weight=w1_fp4,
         w1_weight_sf=w1_blockscale,
@@ -2264,7 +2261,7 @@ def prepare_b12x_w4a16_weights(
         w2_alpha=w2_global_scale,
         activation=activation,
         params_dtype=torch.bfloat16,
-        source_format="modelopt",
+        source_format=source_format,
     )
     return {
         "w1_weight": w1_fp4,
