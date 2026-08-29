@@ -362,6 +362,7 @@ def _candidate_tile_fits(
     scale_format: str = "e4m3_k16",
     weight_layout: str = "packed",
     allow_logical_tail: bool = False,
+    allow_tile_k_32: bool = False,
 ) -> bool:
     if int(tile_k) == -1 or int(tile_n) == -1 or int(cta_threads) == -1:
         return False
@@ -382,7 +383,8 @@ def _candidate_tile_fits(
         or int(tile_k) % scale_group_size != 0
     ):
         return False
-    if int(tile_n) < 64 or int(tile_k) < 64 or int(cta_threads) < 128:
+    min_tile_k = 32 if allow_tile_k_32 else 64
+    if int(tile_n) < 64 or int(tile_k) < min_tile_k or int(cta_threads) < 128:
         return False
     smem_bytes = _shared_memory_footprint(
         cta_m_blocks=cta_m_blocks,
@@ -5497,16 +5499,18 @@ def compile_w4a16_fused_moe(
         and fc1_mn_after <= int(sms)
     ):
         ultra_fc2_tile_k = 32
-        ultra_smem = _shared_memory_footprint(
+        if _candidate_tile_fits(
+            problem_n=hidden_size,
+            problem_k=intermediate_size,
             cta_m_blocks=_covering_count(moe_block_size, 16),
             tile_n=512,
             tile_k=ultra_fc2_tile_k,
+            cta_threads=256,
+            max_shared_mem=int(max_shared_mem) - 512,
             scale_format=scale_format,
             weight_layout=weight_layout,
-        )
-        if (
-            int(intermediate_size) % ultra_fc2_tile_k == 0
-            and ultra_smem <= int(max_shared_mem) - 512
+            allow_logical_tail=allow_native_logical_tail,
+            allow_tile_k_32=True,
         ):
             fc2_tile_n = 512
             fc2_tile_k = ultra_fc2_tile_k
@@ -5543,6 +5547,12 @@ def compile_w4a16_fused_moe(
                 scale_format=scale_format,
                 weight_layout=weight_layout,
                 allow_logical_tail=allow_native_logical_tail,
+                allow_tile_k_32=(
+                    bool(tc_decode_fused_sum)
+                    and name == "fc2"
+                    and forced_tk == 32
+                    and forced_tn == 512
+                ),
             ):
                 raise ValueError(
                     f"force_tile_config {name} tile "
