@@ -221,6 +221,29 @@ def test_w4a16_static_tiler_uses_64_when_intermediate_not_128_aligned():
 
 
 @cute_dsl_available
+def test_w4a16_tc_decode_ultra_fc2_tile_replay_is_valid():
+    """The custom-op replay must accept the TC-decode tile auto-selection."""
+    from flashinfer.fused_moe.cute_dsl.blackwell_sm12x.moe_w4a16_kernel import (
+        _candidate_tile_fits,
+    )
+
+    kwargs = dict(
+        problem_n=2048,
+        problem_k=256,
+        cta_m_blocks=1,
+        tile_n=512,
+        tile_k=32,
+        cta_threads=256,
+        max_shared_mem=100_864,
+        scale_format="e4m3_k32",
+        weight_layout="modelopt",
+    )
+
+    assert not _candidate_tile_fits(**kwargs)
+    assert _candidate_tile_fits(**kwargs, allow_tile_k_32=True)
+
+
+@cute_dsl_available
 def test_w4a16_quant_mode_selects_internal_workspace(monkeypatch):
     """Callers provide quant_mode; dispatch owns the concrete workspace type."""
     from flashinfer.fused_moe.cute_dsl.blackwell_sm12x import moe_dispatch
