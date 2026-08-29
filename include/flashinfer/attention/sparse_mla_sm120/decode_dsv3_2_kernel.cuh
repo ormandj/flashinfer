@@ -20,18 +20,19 @@ namespace flashinfer::sparse_mla_sm120 {
 
 // Sparse MLA decode (V32-family): warp-spec pipeline forked from decode-dsv4
 // (1 IO + 8 math warps, double-buffered KV, per-buffer mbarrier pairs)
-// adapted to 656B inline-scale traits (D_NOPE=512, V_CHUNK=128,
+// adapted to the V32 inline-scale traits (D_NOPE=512, V_CHUNK=128,
 // N_V_CHUNKS=4, V_HAS_ROPE=false). No dual cache.
 //
-// KV gmem layout per token (KV_GMEM_STRIDE=656):
+// DSv3.2 / GLM-NSA KV gmem layout per token (KV_GMEM_STRIDE=656):
 //   [0     : 512)  FP8 e4m3 nope, 4 tiles × 128 elements
 //   [512   : 528)  4 × FP32 scale (one per 128-elem tile)
 //   [528   : 656)  BF16 rope, 64 elements × 2B
 // DSv3.2 stores power-of-2 FP32 scales; GLM_NSA stores arbitrary FP32 scales.
-// GLM53_NOPE reuses the 656 B row with [528:656) as reserved padding — never read as rope.
+// GLM53_NOPE uses a native packed 528 B row with no rope payload. A caller may
+// expose it through a wider runtime row stride when cache groups are shared.
 // The IO warp does a single bulk per token that covers both nope and inline
-// scales in one go (528 B), then a second bulk for rope (128 B). No scalar
-// scale gather phase.
+// scales in one go (528 B), then a second bulk for rope (128 B) only when the
+// model has one. No scalar scale gather phase.
 //
 // Mbarrier pattern matches decode-dsv4: mbar_full[s] for IO→math (leader
 // arrives with expect_tx, bulk completion decrements tx), mbar_empty[s]
@@ -121,7 +122,7 @@ struct DecodeDsv3_2Smem {
 template <ModelType MT, int NUM_HEADS, int PAGE_BLOCK_SIZE>
 __global__ void __launch_bounds__(DSV3_2_BLOCK_THREADS) sparse_mla_decode_dsv3_2_kernel(
     const bf16* __restrict__ Q,               // [num_tokens, num_heads, d_qk=576] bf16
-    const uint8_t* __restrict__ KV_cache,     // FP8 paged (V32 INLINE layout, 656 B/token)
+    const uint8_t* __restrict__ KV_cache,     // FP8 paged (V32 INLINE packed layout)
     const int32_t* __restrict__ indices,      // [num_tokens, topk] int32
     bf16* __restrict__ mid_out,               // [num_tokens, num_heads, num_splits, d_v=512] bf16
     float* __restrict__ mid_lse,              // [num_tokens, num_heads, num_splits] f32

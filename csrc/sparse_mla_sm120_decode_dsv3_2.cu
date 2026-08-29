@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // V32 (DSv3.2) decode — forked from decode-dsv4. Warp-spec (1 IO + 8 math =
-// 288 threads), TMA bulk gather of FP8 INLINE 656 B/token KV cache, double
+// 288 threads), TMA bulk gather of FP8 INLINE KV cache, double
 // buffered with per-buffer mbarrier pairs, static grid (num_tokens × HBLOCKS
 // × num_splits). Reuses decode-dsv4's merge kernel for split combine.
 //

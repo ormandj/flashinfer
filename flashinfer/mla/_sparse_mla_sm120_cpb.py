@@ -67,7 +67,7 @@ _SCHEMA_VERSION = 2
 # v1 files predate the crossover table: constants load, crossover counts as
 # absent and the runtime falls back to the default decode-first policy.
 _LOADABLE_SCHEMA_VERSIONS = (1, 2)
-_BYTES_PER_TOKEN = {"dsv4": 584, "dsv3_2": 656, "glm53_nope": 656, "dots3_swa": 1160}
+_BYTES_PER_TOKEN = {"dsv4": 584, "dsv3_2": 656, "glm53_nope": 528, "dots3_swa": 1160}
 _D_QK = {"dsv4": 512, "dsv3_2": 576, "glm53_nope": 512, "dots3_swa": 1088}
 _D_V = {"dsv4": 512, "dsv3_2": 512, "glm53_nope": 512, "dots3_swa": 1024}
 # Kernel candidate-tile width per family: DOTS3_SWA decodes at BI=32 (its

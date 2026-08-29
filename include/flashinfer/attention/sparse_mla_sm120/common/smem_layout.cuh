@@ -245,11 +245,11 @@ struct SmemLayoutSwapAB {
   using KV = KVCacheTraits<MT>;
   using CT = ComputeTraitsSwapAB<MT>;
 
-  static constexpr int KV_STRIDE = KV::KV_GMEM_STRIDE;          // 656
+  static constexpr int KV_STRIDE = KV::KV_GMEM_STRIDE;
   static constexpr int P_TILE_BYTES = CT::HEADS_PER_WARP * BI;  // 512
 
   // nope + inline scales + rope, one linear tile per candidate.
-  static constexpr size_t SMEM_KV_BUF = BI * KV_STRIDE;  // 41984
+  static constexpr size_t SMEM_KV_BUF = BI * KV_STRIDE;
 
   // The epilogue's [dim, head] to [head, dim] transpose stays inside a warp, one
   // V chunk at a time. Padding keeps each head row aligned for the uint4 readback.

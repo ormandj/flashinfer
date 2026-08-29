@@ -57,6 +57,7 @@ from flashinfer.mla._sparse_mla_sm120 import (
     _MODEL_TYPE_GLM_NSA,
     _MODEL_TYPE_GLM53_NOPE,
     _MODEL_TYPE_DOTS3_SWA,
+    _bytes_per_token_for_model_type,
     _decode_dispatch_error_message,
     _decode_dsv3_2_dispatchable,
     _decode_dsv4_dispatchable,
@@ -98,6 +99,7 @@ def test_supported_configs_families() -> None:
 
     glm53 = configs["glm53_nope"]
     assert glm53.d_qk == 512
+    assert _bytes_per_token_for_model_type(_MODEL_TYPE_GLM53_NOPE) == 528
     assert glm53.page_block_size == 64
     assert glm53.topks == frozenset({2176})
     assert glm53.min_topk == 1

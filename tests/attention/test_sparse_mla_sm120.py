@@ -219,9 +219,9 @@ def quantize_kv_glm_nsa(kv_bf16: torch.Tensor) -> torch.Tensor:
 
 
 def quantize_kv_glm53_nope(kv_bf16: torch.Tensor) -> torch.Tensor:
-    """Pack native NoPE KV into the 656B ABI with arbitrary FP32 scales."""
+    """Pack native NoPE KV into 528 B with arbitrary inline FP32 scales."""
     d_nope, tile_size, num_tiles = 512, 128, 4
-    bpt = 656
+    bpt = d_nope + num_tiles * 4
     nb, bs, hk, d = kv_bf16.shape
     assert d == d_nope and hk == 1
     nt = nb * bs
@@ -237,21 +237,26 @@ def quantize_kv_glm53_nope(kv_bf16: torch.Tensor) -> torch.Tensor:
             scale.view(torch.float32).view(torch.uint8).view(nt, 4)
         )
 
-    # Bytes 528:656 are reserved padding in the stable packed-cache ABI.
     return result.view(nb, bs, 1, bpt)
 
 
 def _assert_has_non_pow2_inline_scales(packed: torch.Tensor) -> None:
-    scales = packed.reshape(-1, 656)[:, 512:528].contiguous().view(torch.float32)
+    scales = (
+        packed.reshape(-1, packed.shape[-1])[:, 512:528]
+        .contiguous()
+        .view(torch.float32)
+    )
     log2_scales = scales.float().log2()
     assert torch.any((log2_scales - log2_scales.round()).abs() > 1e-3)
 
 
 def dequantize_kv_dsv3_2(packed: torch.Tensor) -> torch.Tensor:
-    """Unpack DSv3.2 FP8 INLINE → bf16. Inverse of :func:`quantize_kv_dsv3_2`."""
-    d_nope, d_rope, tile_size, num_tiles = 512, 64, 128, 4
+    """Unpack a V32 inline-scale row (with or without a RoPE suffix)."""
+    d_nope, tile_size, num_tiles = 512, 128, 4
     scale_bytes = num_tiles * 4
     nb, bs, _, _ = packed.shape
+    d_rope = (packed.shape[-1] - d_nope - scale_bytes) // 2
+    assert d_rope in (0, 64)
     nt = nb * bs
     p = packed.reshape(nt, -1)
 
@@ -271,8 +276,9 @@ def dequantize_kv_dsv3_2(packed: torch.Tensor) -> torch.Tensor:
         result[:, ti * tile_size : (ti + 1) * tile_size] = (
             fp8 * scale.unsqueeze(-1)
         ).to(torch.bfloat16)
-    rope_bytes = p[:, d_nope + scale_bytes :].contiguous()
-    result[:, d_nope:] = rope_bytes.view(torch.bfloat16).reshape(nt, d_rope)
+    if d_rope:
+        rope_bytes = p[:, d_nope + scale_bytes :].contiguous()
+        result[:, d_nope:] = rope_bytes.view(torch.bfloat16).reshape(nt, d_rope)
     return result.view(nb, bs, 1, d_nope + d_rope)
 
 
@@ -1604,7 +1610,10 @@ def test_sparse_mla_sm120_prefill_glm_nsa_arbitrary_fp32(num_heads: int) -> None
 
 
 @pytest.mark.parametrize("num_heads", [32, 64])
-def test_sparse_mla_sm120_decode_glm53_nope(num_heads: int) -> None:
+@pytest.mark.parametrize("row_stride", [528, 656])
+def test_sparse_mla_sm120_decode_glm53_nope(
+    num_heads: int, row_stride: int
+) -> None:
     torch.manual_seed(3)
     device = torch.device("cuda")
     d_qk = d_v = 512
@@ -1621,7 +1630,20 @@ def test_sparse_mla_sm120_decode_glm53_nope(num_heads: int) -> None:
     ).clamp(-1, 1)
     kv_packed = quantize_kv_glm53_nope(kv_bf16)
     _assert_has_non_pow2_inline_scales(kv_packed)
-    kv_dequant = dequantize_kv_dsv3_2(kv_packed)[..., :d_qk]
+    kv_dequant = dequantize_kv_dsv3_2(kv_packed)
+    if row_stride == kv_packed.shape[-1]:
+        kv_cache = kv_packed
+    else:
+        # Keep the 528 B payload at the start of a DSv3.2-width shared row.
+        # Decode-v32 must advance by the real runtime row stride.
+        kv_cache = torch.randint(
+            0,
+            256,
+            (num_blocks, page_block_size, 1, row_stride),
+            dtype=torch.uint8,
+            device=device,
+        )
+        kv_cache[..., : kv_packed.shape[-1]] = kv_packed
 
     q = (
         torch.randn(num_tokens, num_heads, d_qk, device=device, dtype=torch.bfloat16)
@@ -1642,7 +1664,7 @@ def test_sparse_mla_sm120_decode_glm53_nope(num_heads: int) -> None:
 
     sparse_mla_sm120_paged_attention(
         q,
-        kv_packed,
+        kv_cache,
         indices,
         output,
         out_lse,
@@ -3149,7 +3171,7 @@ def test_sparse_mla_sm120_envelope_consistency(
     )
 
     d_qk = 576 if model_type in (0, 2) else (1088 if model_type == 4 else 512)
-    bpt = 656 if model_type in (0, 2, 3) else (1160 if model_type == 4 else 584)
+    bpt = {0: 656, 1: 584, 2: 656, 3: 528, 4: 1160}[model_type]
     d_v = 1024 if model_type == 4 else 512
     num_tokens = 2
     kv_cache = torch.zeros(4, page_block_size * bpt, dtype=torch.uint8, device=device)

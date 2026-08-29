@@ -34,13 +34,15 @@
 
 // KV cache IO: gather BI entries from global KV pool to smem.
 //
-// FlashMLA ABI: stride_kv_row = bytes_per_token (DSV3_2: 656, DSV4: 584).
+// Packed layout: stride_kv_row = bytes_per_token (DSV3_2: 656,
+// GLM53_NOPE: 528, DSV4: 584). Decode-v32 may also receive a wider padded
+// runtime row stride from a cache group shared across layer geometries.
 // The IO stride used for address calculation is the DATA stride:
 //   DSV3_2:    656 (nope+scale+rope all contiguous, 656 % 16 = 0 ✓)
 //   DSV4: 576 (nope+rope only, footer scales excluded)
 //           576 % 16 = 0 ✓ for cp.async.bulk
 //
-// DSV3_2 uses flat addressing: kv_ptr + global_idx * 656.
+// Inline-scale types use flat addressing: kv_ptr + global_idx * row_stride.
 // DSV4 uses block-structured addressing (footer layout):
 //   data:  kv_ptr + block_idx * stride_kv_block + local_idx * 576
 //   scale: kv_ptr + block_idx * stride_kv_block + page_block_size * 576 + local_idx * 8
@@ -50,15 +52,15 @@
 template <ModelType MT>
 struct KVIOTraits {
   using KV = KVCacheTraits<MT>;
-  // DSV3_2: IO_STRIDE = KV_GMEM_STRIDE = 656 (inline, bulk copy includes scale)
+  // Inline scale: IO_STRIDE = KV_GMEM_STRIDE (bulk copy includes scale)
   // DSV4: IO_STRIDE = D_NOPE + D_ROPE*2 = 576 (footer, data portion only)
   static constexpr int IO_STRIDE =
       KV::SCALE_IN_KV_SMEM ? KV::KV_GMEM_STRIDE : (KV::D_NOPE + KV::D_ROPE * sizeof(bf16));
   static_assert(IO_STRIDE % 16 == 0, "IO stride must be 16B aligned for cp.async.bulk");
 };
 
-// Bulk gather token nope data (and inline scales for DSV3_2) from global to smem.
-// DSV3_2: flat addressing (idx * 656). DSV4: block-structured (footer layout).
+// Bulk gather token nope data (and inline scales) from global to smem.
+// Inline-scale models use flat addressing. DSV4 uses a footer layout.
 //
 // TILE_BI / TILE_IO_THREADS default to the namespace-scope 64/128, so every
 // existing `io_bulk_gather_tile<MT, PBS, HINT>` spelling keeps its old geometry.

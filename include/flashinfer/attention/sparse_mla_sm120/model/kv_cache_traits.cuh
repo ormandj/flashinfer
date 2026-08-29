@@ -107,13 +107,15 @@ struct KVCacheTraits<ModelType::GLM53_NOPE> {
   static constexpr int NUM_SCALES = D_NOPE / QUANT_TILE;
   static constexpr ScaleFormat SCALE_FORMAT = ScaleFormat::ARBITRARY_FP32;
 
-  // vLLM's fp8_ds_mla cache ABI remains 656 bytes/token. The first 528
-  // bytes contain the 512 FP8 latent values plus four inline FP32 scales;
-  // the trailing 128 bytes are reserved padding and must never be treated as
-  // RoPE data by this specialization.
+  // Native packed NoPE layout, 528 bytes/token:
+  //   [0:512)   FP8 E4M3 latent values (4 tiles x 128)
+  //   [512:528) 4 x arbitrary FP32 scales
+  // There is no RoPE payload, so retaining DSv3.2's final 128 bytes would be
+  // pure per-token padding. Callers that share a wider cache group may still
+  // pass a padded row stride; the decode-v32 path honors that runtime stride.
   static constexpr bool SCALE_INLINE = true;
   static constexpr int SCALE_BYTES_PER_TOKEN = NUM_SCALES * sizeof(float);
-  static constexpr int KV_GMEM_STRIDE = 656;
+  static constexpr int KV_GMEM_STRIDE = D_NOPE + SCALE_BYTES_PER_TOKEN;
   static constexpr int KV_SCALE_GMEM_OFFSET = D_NOPE;
   static constexpr int KV_ROPE_GMEM_OFFSET = D_NOPE + SCALE_BYTES_PER_TOKEN;
   static constexpr int KV_SMEM_STRIDE = D_NOPE + SCALE_BYTES_PER_TOKEN;
@@ -252,6 +254,7 @@ static_assert(KVCacheTraits<ModelType::GLM_NSA>::D_ROPE == D_ROPE);
 static_assert(KVCacheTraits<ModelType::GLM_NSA>::D_V == D_V);
 static_assert(KVCacheTraits<ModelType::GLM53_NOPE>::D_ROPE == 0);
 static_assert(KVCacheTraits<ModelType::GLM53_NOPE>::D_V == D_V);
+static_assert(KVCacheTraits<ModelType::GLM53_NOPE>::KV_GMEM_STRIDE == 528);
 static_assert(KVCacheTraits<ModelType::DOTS3_SWA>::D_ROPE == D_ROPE);
 static_assert(KVCacheTraits<ModelType::DOTS3_SWA>::D_V != D_V,
               "DOTS3_SWA is the D_V opt-out; if it ever equals 512, fold it back "

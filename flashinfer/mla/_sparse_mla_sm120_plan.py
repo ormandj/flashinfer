@@ -68,8 +68,8 @@ _MODEL_TYPE_DSV4 = 1
 _MODEL_TYPE_GLM_NSA = 2
 _MODEL_TYPE_GLM53_NOPE = 3
 _MODEL_TYPE_DOTS3_SWA = 4
-# The V32 kernel family: the 656B/token inline-scale cache ABI. GLM53_NOPE is
-# the rope-free member (d_qk=512; bytes [528:656) are reserved padding).
+# The V32 kernel family uses inline scales. DSv3.2 / GLM-NSA rows are 656 B;
+# rope-free GLM53_NOPE rows are natively packed to 528 B.
 _V32_MODEL_TYPES = frozenset(
     {_MODEL_TYPE_DSV3_2, _MODEL_TYPE_GLM_NSA, _MODEL_TYPE_GLM53_NOPE}
 )
@@ -77,6 +77,7 @@ _V32_MODEL_TYPES = frozenset(
 # topk=2176, the others topk=2048.
 _SWAPAB_MODEL_TYPES = _V32_MODEL_TYPES
 _BPT_DSV3_2 = 656
+_BPT_GLM53_NOPE = 528
 _BPT_DSV4 = 584
 _BPT_DOTS3_SWA = 1160
 

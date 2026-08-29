@@ -87,6 +87,7 @@ from ._sparse_mla_sm120_plan import (
     _BPT_DSV3_2,
     _BPT_DSV4,
     _BPT_DOTS3_SWA,
+    _BPT_GLM53_NOPE,
     _DECODE_DSV3_2_DISPATCH,  # noqa: F401  (vLLM probe surface)
     _DECODE_DSV4_DISPATCH,  # noqa: F401  (vLLM probe surface)
     _DECODE_MAX_HEADS,
@@ -411,8 +412,10 @@ def _resolve_model_type(d_qk: int, kv_scale_format: str) -> int:
 
 
 def _bytes_per_token_for_model_type(model_type: int) -> int:
-    if model_type in (_MODEL_TYPE_DSV3_2, _MODEL_TYPE_GLM_NSA, _MODEL_TYPE_GLM53_NOPE):
+    if model_type in (_MODEL_TYPE_DSV3_2, _MODEL_TYPE_GLM_NSA):
         return _BPT_DSV3_2
+    if model_type == _MODEL_TYPE_GLM53_NOPE:
+        return _BPT_GLM53_NOPE
     if model_type == _MODEL_TYPE_DSV4:
         return _BPT_DSV4
     if model_type == _MODEL_TYPE_DOTS3_SWA:

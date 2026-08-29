@@ -35,7 +35,7 @@
 //   DSV4:    d_nope=448, UE8M0 scale footer, 584B/token
 //   GLM_NSA: d_nope=512, d_rope=64, arbitrary FP32 scale inline, 656B/token
 //   GLM53_NOPE: d_nope=512, d_rope=0, arbitrary FP32 scale inline,
-//               656B/token (the final 128 bytes are reserved cache padding)
+//               528B/token
 //   DOTS3_SWA: d_nope=1024, d_rope=64, UE8M0 scale footer, 1160B/token
 //
 // DOTS3_SWA is the sliding-window family: its candidate list is a 513-token
@@ -49,8 +49,9 @@ constexpr int bytes_per_token(ModelType mt) {
   switch (mt) {
     case ModelType::DSV3_2:
     case ModelType::GLM_NSA:
-    case ModelType::GLM53_NOPE:
       return 656;
+    case ModelType::GLM53_NOPE:
+      return 528;
     case ModelType::DSV4:
       return 584;
     case ModelType::DOTS3_SWA:
