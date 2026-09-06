@@ -330,3 +330,83 @@ def test_w4a16_workspace_route_buffers_cover_route_pack_capacity(monkeypatch):
         required = max_packed_route_slots(numel_capacity, block_size, num_experts)
         assert slots >= required
         assert blocks >= (required + block_size - 1) // block_size
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+@pytest.mark.parametrize(
+    "num_experts,tokens,block_size",
+    [(e, n, 8) for e in (1, 7, 288, 512) for n in (1, 9, 16)]
+    + [(16, 48, 8), (16, 48, 48), (288, 16, 48)],
+)
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("mapped", [False, True])
+def test_route_pack_graph_replay_replaces_expert_distribution(
+    num_experts, tokens, block_size, dtype, mapped
+):
+    """Changing routes must replace counts, empty experts and padding in place."""
+    from flashinfer.fused_moe.cute_dsl.blackwell_sm12x.moe_w4a16_host import (
+        max_packed_route_slots,
+        route_pack_numel_capacity,
+    )
+
+    topk = 8
+    ids = torch.zeros((tokens, topk), dtype=dtype, device="cuda")
+    expert_map = None
+    if mapped:
+        expert_map = torch.arange(num_experts, dtype=torch.int32, device="cuda")
+        expert_map.remainder_(max(1, num_experts // 2))
+        expert_map[::3] = -1
+        expert_map[1::5] = num_experts
+    capacity = route_pack_numel_capacity(ids.numel(), topk=topk)
+    slots = max_packed_route_slots(capacity, block_size, num_experts)
+    workspace = {
+        "packed_route_indices": torch.empty(slots, dtype=torch.int32, device="cuda"),
+        "block_expert_ids": torch.empty(
+            math.ceil(slots / block_size), dtype=torch.int32, device="cuda"
+        ),
+        "packed_route_count": torch.empty(1, dtype=torch.int32, device="cuda"),
+        "expert_offsets": torch.empty(
+            num_experts + 1, dtype=torch.int32, device="cuda"
+        ),
+    }
+
+    def run():
+        return pack_topk_routes_by_expert(
+            ids, block_size, num_experts, expert_map=expert_map, **workspace
+        )
+
+    run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        packed, owners, count = run()
+
+    generator = torch.Generator().manual_seed(20260906)
+    host_inputs = [
+        torch.randint(0, num_experts, ids.shape, dtype=dtype, generator=generator),
+        torch.full(ids.shape, num_experts - 1, dtype=dtype),
+        torch.arange(ids.numel(), dtype=dtype).reshape(ids.shape) % num_experts,
+        torch.full(ids.shape, -1, dtype=dtype),
+        torch.full(ids.shape, num_experts, dtype=dtype),
+        torch.zeros(ids.shape, dtype=dtype),
+    ]
+    for host_ids in host_inputs:
+        ids.copy_(host_ids)
+        for buffer in workspace.values():
+            buffer.fill_(-777)
+        graph.replay()
+        expected_ids, valid, expected_count, expected_owners = _expected_route_pack(
+            ids, block_size, num_experts, expert_map
+        )
+        total = int(expected_count.item())
+        assert torch.equal(count.cpu(), expected_count)
+        assert torch.equal(owners[: total // block_size].cpu(), expected_owners)
+        assert bool((owners[total // block_size :] == -1).all())
+        assert bool((packed[total:] == ids.numel()).all())
+        host_routes = packed[:total].cpu().long()
+        assert bool(((host_routes >= 0) & (host_routes <= ids.numel())).all())
+        payload = host_routes[host_routes < ids.numel()]
+        assert torch.equal(payload.sort().values, torch.nonzero(valid).flatten())
+        for i, expert in enumerate(expected_owners.tolist()):
+            routes = host_routes[i * block_size : (i + 1) * block_size]
+            routes = routes[routes < ids.numel()]
+            assert bool((expected_ids[routes] == expert).all())

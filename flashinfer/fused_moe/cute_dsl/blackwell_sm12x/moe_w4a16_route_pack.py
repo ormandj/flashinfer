@@ -162,6 +162,7 @@ def _pack_topk_routes_small_prefix_kernel(
     BLOCK_T: tl.constexpr,
     BLOCK_ROUTE_INIT: tl.constexpr,
     BLOCK_M: tl.constexpr,
+    LOG2_BLOCK_E: tl.constexpr,
 ):
     experts = tl.arange(0, BLOCK_E)
     expert_mask = experts < NUM_EXPERTS
@@ -180,10 +181,8 @@ def _pack_topk_routes_small_prefix_kernel(
             ids = tl.load(expert_map + safe_ids, mask=valid, other=-1).to(tl.int32)
             valid = valid & (ids >= 0) & (ids < NUM_EXPERTS)
 
-        matches = (
-            (experts[:, None] == ids[None, :]) & expert_mask[:, None] & valid[None, :]
-        )
-        counts += tl.sum(matches.to(tl.int32), axis=1)
+        # Avoid materializing a BLOCK_E by BLOCK_T comparison tile for counts.
+        counts += tl.histogram(ids, BLOCK_E, mask=valid)
 
     padded = ((counts + BLOCK_SIZE - 1) // BLOCK_SIZE) * BLOCK_SIZE
     padded = tl.where(expert_mask, padded, 0)
@@ -204,13 +203,17 @@ def _pack_topk_routes_small_prefix_kernel(
 
     block_offsets = tl.arange(0, BLOCK_M)
     block_rows = block_offsets * BLOCK_SIZE
-    active = (
-        (block_offsets[None, :] < MAX_ROUTE_BLOCKS)
-        & expert_mask[:, None]
-        & (block_rows[None, :] >= prefix[:, None])
-        & (block_rows[None, :] < inclusive[:, None])
-    )
-    block_experts = tl.max(tl.where(active, experts[:, None], -1), axis=0)
+    # Upper-bound search also avoids an expert-by-block tile. Repeated prefix
+    # values from empty experts must be skipped, including trailing padding.
+    lo = tl.full((BLOCK_M,), 0, tl.int32)
+    hi = tl.full((BLOCK_M,), BLOCK_E - 1, tl.int32)
+    for _ in range(LOG2_BLOCK_E):
+        mid = (lo + hi) // 2
+        end = tl.gather(inclusive, mid, axis=0)
+        advance = end <= block_rows
+        lo = tl.where(advance, mid + 1, lo)
+        hi = tl.where(advance, hi, mid)
+    block_experts = tl.where(block_rows < total, lo, -1)
     tl.store(
         block_expert_ids + block_offsets,
         block_experts,
@@ -401,6 +404,7 @@ def pack_topk_routes_by_expert(
             BLOCK_T=_COUNT_BLOCK_T,
             BLOCK_ROUTE_INIT=block_route_init,
             BLOCK_M=block_m,
+            LOG2_BLOCK_E=block_e.bit_length() - 1,
             num_warps=8,
         )
     else:
